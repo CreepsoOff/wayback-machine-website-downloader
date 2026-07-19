@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+.wayback-cache
+.wayback-state.json
+wayback-mirror
+dist
+build

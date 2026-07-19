@@ -3,3 +3,8 @@ __pycache__/
 .DS_Store
 wayback-mirror/
 *.part-*
+dist/
+build/
+*.egg-info/
+.wayback-cache/
+.wayback-state.json
