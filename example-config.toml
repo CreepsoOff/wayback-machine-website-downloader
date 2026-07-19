@@ -1,0 +1,15 @@
+[wayback]
+url = "https://example.com"
+output = "example-mirror"
+strategy = "nearest"
+timestamp = "20250101120000"
+scope_type = "host"
+statuses = ["200", "3xx"]
+external_hosts = ["cdn.example.com"]
+external_depth = 2
+external_budget = 100
+discover_javascript = true
+verify_digests = true
+export_warc = false
+workers = 1
+delay = 0.75

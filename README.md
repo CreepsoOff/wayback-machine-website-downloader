@@ -1,145 +1,250 @@
 # Wayback Machine Website Downloader
 
-A small, dependency-free Python tool that reconstructs an entire archived website from the Internet Archive's Wayback Machine.
+A dependency-free, CDX-first website reconstruction tool for the Internet Archive's Wayback Machine.
 
-Instead of crawling links from a homepage, it queries the Wayback CDX index for every successful capture under the site's host. This also finds archived pages and assets that are orphaned, unlinked, or absent from the selected homepage.
+V1.5 inventories archived URLs before downloading them, reconstructs coherent snapshots, discovers controlled external resources, verifies content, resumes interrupted work, and produces auditable reports. The default Python runtime has **zero third-party dependencies**.
+
+## Why CDX-first?
+
+Link crawlers only see resources reachable from downloaded pages. This tool first queries the Wayback CDX index for the complete selected host, domain, or path prefix. It therefore sees archived orphan pages, generated assets, JSON endpoints, and files that are not linked by the homepage.
 
 ## Features
 
-- Inventories the complete host through the Wayback CDX API
-- Follows CDX resume keys without a fixed page limit
-- Downloads HTML, CSS, JavaScript, images, JSON, and other indexed files
-- Selects the latest capture of every URL by default
-- Can reconstruct a composite snapshot nearest a specified timestamp
-- Downloads original archived responses through Wayback's `id_` replay mode
-- Rewrites internal HTML and CSS references for local browsing
-- Preserves query-string variants using collision-safe filenames
-- Retries temporary archive errors with exponential backoff
-- Resumes automatically when files already exist
-- Produces machine-readable inventory and completion reports
-- Uses only the Python standard library
+- Unlimited CDX resume-key pagination with persistent continuation state
+- `host`, `domain`, and `prefix` scopes, plus a raw legacy `--scope` override
+- Snapshot strategies: `latest`, `nearest`, `before`, and `after`
+- Complete capture history with `--all-timestamps`
+- Repeatable status and MIME inclusion/exclusion filters
+- `warc/revisit` resolution through CDX
+- Archived redirect reconstruction as local redirect pages
+- SHA-1/Base32 CDX digest verification against raw and decoded replay payloads
+- Exact-URL external asset discovery controlled by host allowlist, depth, and URL budget
+- HTML, CSS, and heuristic JavaScript discovery (`fetch`, dynamic `import`, `require`, Axios, `new URL`, asset literals)
+- Local HTML/CSS link rewriting after discovery completes
+- Collision-safe paths for query strings, protocols, timestamps, and external hosts
+- Persistent per-capture download state and raw-body cache
+- Optional WARC 1.1 resource export
+- JSON URL mapping, inventory, completion report, missing-resource report, and XML sitemap
+- JSON and TOML configuration
+- PyPI-ready package and console command
+- Optional Docker image
+- No Playwright or real JavaScript execution in V1.5
 
 ## Requirements
 
-- Python 3.10 or newer
+- Python 3.11 or newer
 - Internet access to `web.archive.org`
 
-No packages need to be installed.
+## Installation
 
-## Usage
-
-Pass the original HTTPS website URL—not a Wayback replay URL:
+### Run from a checkout
 
 ```bash
 python3 wayback_mirror.py https://example.com --output example-mirror
 ```
 
-The default output directory is `wayback-mirror` when `--output` is omitted.
+### Install the console command
 
-The URL argument must use HTTPS. Inputs such as the following are deliberately rejected:
+```bash
+python3 -m pip install .
+wayback-machine-downloader https://example.com --output example-mirror
+```
+
+The published package metadata is ready for PyPI, but availability on PyPI depends on a separate release/upload.
+
+### Docker
+
+```bash
+docker build -t wayback-machine-downloader .
+docker run --rm -v "$PWD/output:/output" wayback-machine-downloader \
+  https://example.com --output /output/example-mirror
+```
+
+## URL input
+
+Pass the original HTTPS site URL:
+
+```bash
+wayback-machine-downloader https://example.com
+```
+
+Wayback replay URLs and plain HTTP inputs are deliberately rejected:
 
 ```text
 https://web.archive.org/web/20250101000000/https://example.com/
 http://example.com/
 ```
 
-### Reconstruct a point in time
+## Snapshot selection
 
-By default, the downloader selects the newest successful capture for each distinct URL. To select the capture nearest a particular time instead:
+The default `latest` strategy selects the newest matching capture independently for every URL:
 
 ```bash
-python3 wayback_mirror.py https://example.com \
+wayback-machine-downloader https://example.com --strategy latest
+```
+
+Point-in-time strategies require a 14-digit UTC timestamp:
+
+```bash
+wayback-machine-downloader https://example.com \
   --timestamp 20250101120000 \
-  --output example-2025
+  --strategy nearest
 ```
 
-Timestamps use `YYYYMMDDhhmmss` in UTC.
+Available strategies:
 
-### Restrict the CDX date range
+| Strategy | Selection |
+|---|---|
+| `latest` | Newest capture for each URL |
+| `nearest` | Capture closest to the target, in either direction |
+| `before` | Newest capture at or before the target |
+| `after` | Oldest capture at or after the target |
 
-The optional bounds are inclusive and can contain between 1 and 14 timestamp digits:
+For backward compatibility, supplying `--timestamp` without `--strategy` automatically uses `nearest`.
+
+Download every matching historical capture into `snapshots/<timestamp>/...`:
 
 ```bash
-python3 wayback_mirror.py https://example.com \
-  --from 2024 \
-  --to 2025 \
-  --output example-archive
+wayback-machine-downloader https://example.com --all-timestamps
 ```
 
-### Inventory without downloading
+## Scopes and filters
 
 ```bash
-python3 wayback_mirror.py https://example.com \
-  --inventory-only \
-  --output example-inventory
+# Exact host
+wayback-machine-downloader https://example.com --scope-type host
+
+# Host and subdomains
+wayback-machine-downloader https://example.com --scope-type domain
+
+# Only the path prefix from the input URL
+wayback-machine-downloader https://example.com/docs/ --scope-type prefix
+
+# Successful pages and redirects, excluding video
+wayback-machine-downloader https://example.com \
+  --status 200 --status 3xx \
+  --mime 'text/*' --exclude-mime 'video/*'
 ```
 
-### Include subdomains
-
-The default scope covers only the exact host. To include its subdomains, override the CDX scope explicitly:
+Use `--status any` to retain every indexed status. CDX timestamp bounds are inclusive:
 
 ```bash
-python3 wayback_mirror.py https://example.com \
-  --scope '*.example.com/' \
-  --output example-domain
+wayback-machine-downloader https://example.com --from 2024 --to 2025
 ```
 
-## Options
+## Controlled external assets
+
+External crawling is disabled unless hosts are explicitly allowed. Only URLs actually discovered in archived HTML, CSS, or JavaScript are queried; the downloader never inventories an entire third-party CDN.
+
+```bash
+wayback-machine-downloader https://example.com \
+  --external-host cdn.example.com \
+  --external-host fonts.example.com \
+  --external-depth 2 \
+  --external-budget 200
+```
+
+- **Allowlist:** exact hostnames only
+- **Depth:** maximum discovery generations after the primary scope
+- **Budget:** maximum distinct external URLs queried
+- **Missing report:** disallowed, unavailable, depth-limited, and budget-limited discoveries are recorded
+
+JavaScript discovery is static and heuristic. Disable it with `--no-discover-javascript`.
+
+## Integrity, resumption, and WARC
+
+Digest verification is enabled by default. Disable it only when diagnosing an unusual replay:
+
+```bash
+wayback-machine-downloader https://example.com --no-verify-digests
+```
+
+The output contains `.wayback-state.json` and `.wayback-cache/`. Rerunning the same command reuses completed CDX pages and downloaded captures while retrying incomplete work. Do not remove these until the mirror is finalized.
+
+Create an optional WARC 1.1 resource export from successfully downloaded payloads:
+
+```bash
+wayback-machine-downloader https://example.com --export-warc
+```
+
+The generated `archive.warc` is a new resource WARC containing the recovered payloads and source metadata. It is not the Internet Archive's original internal WARC file.
+
+## Configuration files
+
+Both JSON and TOML are supported. CLI options override file values.
+
+```bash
+wayback-machine-downloader --config example-config.toml
+```
+
+Example TOML:
+
+```toml
+[wayback]
+url = "https://example.com"
+output = "example-mirror"
+timestamp = "20250101120000"
+strategy = "nearest"
+scope_type = "host"
+statuses = ["200", "3xx"]
+external_hosts = ["cdn.example.com"]
+external_depth = 2
+external_budget = 100
+verify_digests = true
+```
+
+See [`example-config.toml`](example-config.toml) for the complete sample.
+
+## Audit artifacts
+
+| File | Purpose |
+|---|---|
+| `wayback-inventory.json` | Configuration and every selected CDX capture |
+| `wayback-report.json` | Expected/downloaded/failed counts and digest results |
+| `url-map.json` | Capture ID to local path mapping |
+| `missing-resources.json` | Unavailable, disallowed, depth-limited, or budget-limited discoveries |
+| `sitemap.xml` | Archived HTML URLs and local alternate paths |
+| `.wayback-state.json` | Persistent CDX and per-download resume state |
+| `.wayback-cache/` | Decoded replay payload cache |
+| `archive.warc` | Optional WARC export |
+
+The process exits nonzero when a download or digest verification fails. “Complete” means every publicly accessible capture returned by the chosen CDX scope and filters; a downloader cannot recover material that the Internet Archive never captured or no longer exposes.
+
+## Important options
 
 ```text
-usage: wayback_mirror.py [-h] [-o OUTPUT] [--timestamp TIMESTAMP]
-                         [--from FROM_TS] [--to TO_TS] [--scope SCOPE]
-                         [--workers WORKERS] [--delay DELAY]
-                         [--page-size PAGE_SIZE] [--inventory-only]
-                         url
-
-positional arguments:
-  url                   original HTTPS site URL
-
-options:
-  -o, --output PATH     destination directory (default: wayback-mirror)
-  --timestamp VALUE     14-digit point-in-time selection target
-  --from VALUE          inclusive CDX timestamp lower bound
-  --to VALUE            inclusive CDX timestamp upper bound
-  --scope VALUE         CDX scope override
-  --workers N           concurrent downloads (default: 1)
-  --delay SECONDS       minimum interval between requests (default: 0.75)
-  --page-size N         records requested per CDX page (default: 5000)
-  --inventory-only      write the inventory without fetching captures
+--strategy {latest,nearest,before,after}
+--timestamp YYYYMMDDhhmmss
+--all-timestamps
+--scope-type {host,domain,prefix}
+--status CODE|CLASS|any
+--mime TYPE
+--exclude-mime TYPE
+--external-host HOST
+--external-depth N
+--external-budget N
+--[no-]discover-javascript
+--[no-]verify-digests
+--export-warc
+--config FILE.json|FILE.toml
+--inventory-only
 ```
 
-The conservative request defaults are intentional. Wayback is a shared public service and may refuse bursty replay traffic. If concurrency is increased, retain a nonzero delay.
-
-## Output and completeness
-
-Every run writes two audit files:
-
-- `wayback-inventory.json` lists every selected URL, capture timestamp, replay URL, MIME type, digest, and local path.
-- `wayback-report.json` compares the number of expected, downloaded, and failed URLs.
-
-The command exits with status `1` if any capture fails. Rerun the same command to retry missing files; existing non-empty files are retained.
-
-In this project, “complete” means every publicly accessible HTTP `200` capture returned by Wayback's CDX index for the selected scope and date range. The downloader cannot retrieve captures excluded or blocked by the Internet Archive. Third-party assets on unrelated hosts are outside the default scope; download those hosts separately if they are required.
-
-## How it works
-
-1. The original hostname is converted to a CDX prefix query such as `example.com/*`.
-2. The tool follows sequential CDX resume keys until the server returns no continuation token.
-3. Successful captures are grouped by exact original URL.
-4. The latest capture, or the one nearest `--timestamp`, is selected for every URL.
-5. Each resource is downloaded using `/{timestamp}id_/{original-url}`.
-6. Same-site HTML and CSS references are rewritten to their mapped local files.
-7. The final report records every success and failure.
+Run `wayback-machine-downloader --help` for the full CLI reference.
 
 ## Development
 
-Run the test suite with:
-
 ```bash
-python3 -m unittest -v
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3 -m compileall -q src
+python3 -m build
 ```
 
-The project intentionally avoids runtime dependencies to keep installation and auditing simple.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for module boundaries and the V2 browser extension point.
+
+## V2 browser mode
+
+V1.5 does not install or invoke Playwright. `DiscoveryProvider` and the reserved `browser` packaging extra provide a clean boundary for a future optional browser implementation. The zero-dependency core will remain the default.
 
 ## License
 
